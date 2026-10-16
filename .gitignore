@@ -184,3 +184,6 @@ coverage/
 ui-desktop/release/
 ui-desktop/test-results/
 .clawcodex-install
+
+# Local work notes
+/tasks/
