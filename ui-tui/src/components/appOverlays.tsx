@@ -4,7 +4,6 @@ import { useStore } from '@nanostores/react'
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
-import { argumentHintFor } from '../app/slash/argumentHints.js'
 import { $uiLogoPalette, $uiPermissionMode, $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
@@ -23,8 +22,6 @@ import { QuestionPrompt } from './questionPrompt.js'
 import { RewindPicker } from './rewindPicker.js'
 import { SkillsHub } from './skillsHub.js'
 import { WorktreeExitPrompt } from './worktreeExitPrompt.js'
-
-const COMPLETION_WINDOW = 16
 
 export function PromptZone({
   cols,
@@ -180,9 +177,6 @@ export function PromptZone({
 }
 
 export function FloatingOverlays({
-  cols,
-  compIdx,
-  completions,
   onActiveSessionSelect,
   onActiveSessionClose,
   onLogoSelect,
@@ -195,9 +189,6 @@ export function FloatingOverlays({
   pagerPageSize
 }: Pick<
   AppOverlaysProps,
-  | 'cols'
-  | 'compIdx'
-  | 'completions'
   | 'onActiveSessionSelect'
   | 'onActiveSessionClose'
   | 'onLogoSelect'
@@ -225,19 +216,11 @@ export function FloatingOverlays({
     overlay.petPicker ||
     overlay.sessions ||
     overlay.skillsHub ||
-    overlay.pluginsHub ||
-    completions.length
+    overlay.pluginsHub
 
   if (!hasAny) {
     return null
   }
-
-  // Fixed viewport centered on compIdx — previously the slice end was
-  // compIdx + 8 so the dropdown grew from 8 rows to 16 as the user scrolled
-  // down, bouncing the height on every keystroke.
-  const viewportSize = Math.min(COMPLETION_WINDOW, completions.length)
-
-  const start = Math.max(0, Math.min(compIdx - Math.floor(COMPLETION_WINDOW / 2), completions.length - viewportSize))
 
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
@@ -342,60 +325,6 @@ export function FloatingOverlays({
                   : `end · ↑↓/jk · b/PgUp back · g top · Esc/q close (${overlay.pager.lines.length} lines)`}
               </OverlayHint>
             </Box>
-          </Box>
-        </FloatBox>
-      )}
-
-      {!!completions.length && (
-        <FloatBox color={theme.color.primary}>
-          <Box flexDirection="column" width={Math.max(28, cols - 6)}>
-            {completions.slice(start, start + viewportSize).map((item, i) => {
-              const active = start + i === compIdx
-
-              // Slash rows show the command's argument grammar dim after the
-              // name (original CC's argumentHint). Local registry wins over
-              // the gateway item's hint — dispatch consults it first, so a
-              // shadowing local command's grammar is the truthful one.
-              const hint = item.text.startsWith('/')
-                ? (argumentHintFor(item.text.slice(1)) ?? item.hint)
-                : item.hint
-
-              return (
-                <Box
-                  backgroundColor={active ? theme.color.completionCurrentBg : theme.color.completionBg}
-                  flexDirection="row"
-                  key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
-                  width="100%"
-                >
-                  {/* flexShrink=0 — when meta overflows the row, Ink/Yoga
-                      otherwise shaves the last char off the display column
-                      (e.g. /goal renders as /goa). */}
-                  <Box flexShrink={0}>
-                    <Text bold color={theme.color.label}>
-                      {' '}
-                      {item.display}
-                    </Text>
-                  </Box>
-                  {hint ? (
-                    <Box flexShrink={0}>
-                      <Text color={theme.color.muted}>
-                        {' '}
-                        {hint}
-                      </Text>
-                    </Box>
-                  ) : null}
-                  {item.meta ? (
-                    <Text
-                      backgroundColor={active ? theme.color.completionMetaCurrentBg : theme.color.completionMetaBg}
-                      color={theme.color.muted}
-                    >
-                      {' '}
-                      {item.meta}
-                    </Text>
-                  ) : null}
-                </Box>
-              )
-            })}
           </Box>
         </FloatBox>
       )}

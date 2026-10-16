@@ -26,6 +26,7 @@ import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } 
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { BusyLine } from './busyLine.js'
+import { CompletionMenu } from './completionMenu.js'
 import { ComposerFooter } from './composerFooter.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { CronIndicator } from './cronIndicator.js'
@@ -299,9 +300,6 @@ const ComposerPane = memo(function ComposerPane({
         position="relative"
       >
         <FloatingOverlays
-          cols={composer.cols}
-          compIdx={composer.compIdx}
-          completions={composer.completions}
           onActiveSessionClose={actions.closeLiveSession}
           onActiveSessionSelect={actions.activateLiveSession}
           onLogoSelect={actions.onLogoSelect}
@@ -367,6 +365,13 @@ const ComposerPane = memo(function ComposerPane({
           </>
         )}
       </Box>
+
+      <CompletionMenu
+        cols={composer.cols}
+        compIdx={composer.compIdx}
+        completions={composer.completions}
+        input={composer.input}
+      />
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}
 
