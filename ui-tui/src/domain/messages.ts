@@ -106,9 +106,17 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       out.push({ role, text, ...(pending.length && { tools: pending }) })
       pending = []
     } else if (role === 'user' || role === 'system') {
+      if (pending.length) {
+        out.push({ kind: 'trail', role: 'system', text: '', tools: pending })
+      }
+
       out.push({ role, text })
       pending = []
     }
+  }
+
+  if (pending.length) {
+    out.push({ kind: 'trail', role: 'system', text: '', tools: pending })
   }
 
   return out

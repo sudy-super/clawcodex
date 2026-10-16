@@ -255,3 +255,188 @@ def test_failed_archive_save_leaves_code_and_conversation_intact(tmp_path):
     assert "preserve the conversation" in reply(emitted)["error"]
     assert file.read_text() == "after"
     assert len(server.session.conversation.messages) == 2
+
+
+class _RewindProvider:
+    model = "rewind-test"
+
+    def __init__(self, *, streaming=False, tool=False, error=False):
+        self.streaming = streaming
+        self.tool = tool
+        self.error = error
+        self.calls = []
+
+    def chat(self, messages, tools=None, **kwargs):
+        from src.providers.base import ChatResponse
+
+        self.calls.append(messages)
+        if self.error and len(self.calls) == 1:
+            raise ValueError("provider 400: workspace-id required")
+        if self.tool and len(self.calls) == 1:
+            return ChatResponse(content="model 1 before tool", model=self.model,
+                usage={"input_tokens": 3, "output_tokens": 2}, finish_reason="tool_use",
+                tool_uses=[{"id": "write-1", "name": "Write", "input": {
+                    "file_path": self.file_path, "content": "first"}}])
+        answer = "model 1" if len(self.calls) == (2 if self.tool else 1) else "model 2"
+        return ChatResponse(content=answer, model=self.model,
+            usage={"input_tokens": 3, "output_tokens": 2}, finish_reason="stop")
+
+    def chat_stream_response(self, messages, tools=None, on_text_chunk=None, **kwargs):
+        if not self.streaming:
+            raise NotImplementedError
+        result = self.chat(messages, tools=tools, **kwargs)
+        if on_text_chunk and result.content:
+            for chunk in [result.content[:4], result.content[4:]]:
+                on_text_chunk(chunk)
+        return result
+
+
+def real_turn_session(tmp_path, provider):
+    from src.tool_system.registry import ToolRegistry
+    from src.tool_system.tools.write import WriteTool
+
+    server, emitted = session(tmp_path)
+    server.provider = provider
+    server.tool_registry = ToolRegistry([WriteTool])
+    server.tool_context = ToolContext(workspace_root=tmp_path)
+    server._run_user_prompt_submit_hooks = lambda prompt: None
+    server._fire_session_start_once = lambda: None
+    return server, emitted
+
+
+@pytest.mark.parametrize("streaming,tool", [(False, False), (True, False), (True, True)])
+def test_real_agent_turn_rewind_keeps_first_model_reply(tmp_path, streaming, tool):
+    provider = _RewindProvider(streaming=streaming, tool=tool)
+    provider.file_path = str(tmp_path / "created.txt")
+    server, emitted = real_turn_session(tmp_path, provider)
+    with patch("src.server.agent_server._sessions_dir", return_value=tmp_path / "sessions"):
+        assert server._run_turn("user 1")["subtype"] == "success"
+        assert server._run_turn("user 2")["subtype"] == "success"
+        before = server.session.conversation.to_dict()
+        second = next(m for m in server.session.conversation.messages if m.content == "user 2")
+        server._do_rewind("restore", second.uuid, "conversation")
+    result = reply(emitted)
+    assert result["ok"]
+    assert {"role": "assistant", "text": "model 1"} in result["messages"]
+    assert {"role": "assistant", "text": "model 2"} not in result["messages"]
+    saved = json.loads((tmp_path / "sessions/live.json").read_text())
+    assert saved["conversation"]["messages"] == before["messages"][:before["messages"].index(next(m for m in before["messages"] if m["uuid"] == second.uuid))]
+    assert any("model 1" in str(m["content"]) for m in saved["conversation"]["messages"])
+    archives = [p for p in (tmp_path / "sessions").glob("*.json") if p.stem != "live"]
+    assert json.loads(archives[0].read_text())["conversation"] == before
+    if tool:
+        assert any(row.get("name") == "Write" for row in result["messages"])
+        assert (tmp_path / "created.txt").read_text() == "first"
+    if streaming:
+        assert any(e.get("type") == "stream_event" for e in emitted)
+
+
+def test_real_provider_error_survives_rewind_and_resume_without_entering_model_history(tmp_path):
+    provider = _RewindProvider(error=True)
+    server, emitted = real_turn_session(tmp_path, provider)
+    sessions_dir = tmp_path / "sessions"
+    error_text = "provider 400: workspace-id required"
+    with patch("src.server.agent_server._sessions_dir", return_value=sessions_dir):
+        assert server._run_turn("user 1")["subtype"] == "error"
+        assert any(e.get("type") == "result" and e.get("error") == error_text for e in emitted)
+        assert all(error_text not in str(m.content) for m in server.session.conversation.messages)
+        assert server._run_turn("user 2")["subtype"] == "success"
+        assert all(error_text not in str(call) for call in provider.calls)
+        second = next(m for m in server.session.conversation.messages if m.content == "user 2")
+        server._do_rewind("restore", second.uuid, "conversation")
+        assert reply(emitted)["messages"] == [
+            {"role": "user", "text": "user 1"},
+            {"role": "system", "text": f"error: {error_text}"},
+        ]
+        saved = json.loads((sessions_dir / "live.json").read_text())
+        assert len(saved["conversation"]["messages"]) == 1
+        assert list(saved["display_messages"]) == [server.session.conversation.messages[0].uuid]
+        resumed, resume_emitted = session(tmp_path)
+        resumed._do_resume("resume", "live", include_messages=True)
+        assert reply(resume_emitted)["messages"] == reply(emitted)["messages"]
+        # Rewinding the error's own prompt removes its display record too.
+        first_id = resumed.session.conversation.messages[0].uuid
+        resumed._do_rewind("first", first_id, "conversation")
+        assert reply(resume_emitted)["messages"] == []
+        assert json.loads((sessions_dir / "live.json").read_text())["display_messages"] == {}
+
+
+class _PartialFailureProvider(_RewindProvider):
+    def chat_stream_response(self, messages, tools=None, on_text_chunk=None, **kwargs):
+        if len(self.calls) == 1:
+            self.calls.append(messages)
+            if on_text_chunk:
+                on_text_chunk("unfinished ")
+                on_text_chunk("model output")
+            raise ValueError("stream interrupted by provider")
+        return super().chat_stream_response(messages, tools=tools, on_text_chunk=on_text_chunk, **kwargs)
+
+
+def test_partial_response_and_tool_before_error_keep_order_in_rewind_archive_and_resume(tmp_path):
+    provider = _PartialFailureProvider(streaming=True, tool=True)
+    provider.file_path = str(tmp_path / "created.txt")
+    server, emitted = real_turn_session(tmp_path, provider)
+    sessions_dir = tmp_path / "sessions"
+    with patch("src.server.agent_server._sessions_dir", return_value=sessions_dir):
+        assert server._run_turn("user 1")["subtype"] == "error"
+        assert server._run_turn("user 2")["subtype"] == "success"
+        assert all("unfinished model output" not in str(call) for call in provider.calls)
+        assert all("stream interrupted by provider" not in str(call) for call in provider.calls)
+        second = next(m for m in server.session.conversation.messages if m.content == "user 2")
+        server._do_rewind("restore", second.uuid, "conversation")
+        rows = reply(emitted)["messages"]
+        assert rows == [
+            {"role": "user", "text": "user 1"},
+            {"role": "assistant", "text": "model 1 before tool"},
+            {"role": "tool", "name": "Write", "input": {"file_path": provider.file_path}},
+            {"role": "assistant", "text": "unfinished model output"},
+            {"role": "system", "text": "error: stream interrupted by provider"},
+        ]
+        archive = next(p for p in sessions_dir.glob("*.json") if p.stem != "live")
+        saved_original = json.loads(archive.read_text())
+        assert saved_original["display_messages"] == server._display_messages
+        assert any(m["content"] == "user 2" for m in saved_original["conversation"]["messages"])
+        resumed, resume_emitted = session(tmp_path)
+        resumed._do_resume("resume", "live", include_messages=True)
+        assert reply(resume_emitted)["messages"] == rows
+        assert all("unfinished model output" not in str(m.content) for m in resumed.session.conversation.messages)
+
+
+def test_rewind_removes_only_selected_and_later_display_errors_and_clear_resets_map(tmp_path):
+    class _AlwaysErrorProvider(_RewindProvider):
+        def chat(self, messages, tools=None, **kwargs):
+            self.calls.append(messages)
+            raise ValueError(f"provider error {len(self.calls)}")
+
+    server, emitted = real_turn_session(tmp_path, _AlwaysErrorProvider())
+    sessions_dir = tmp_path / "sessions"
+    with patch("src.server.agent_server._sessions_dir", return_value=sessions_dir):
+        server._run_turn("user 1")
+        first_id = server.session.conversation.messages[0].uuid
+        server._run_turn("user 2")
+        second_id = server.session.conversation.messages[1].uuid
+        server._do_rewind("restore", second_id, "conversation")
+        assert reply(emitted)["messages"] == [
+            {"role": "user", "text": "user 1"},
+            {"role": "system", "text": "error: provider error 1"},
+        ]
+        assert set(server._display_messages) == {first_id}
+        archive = next(p for p in sessions_dir.glob("*.json") if p.stem != "live")
+        assert set(json.loads(archive.read_text())["display_messages"]) == {first_id, second_id}
+        asyncio.run(server._handle_control_request({"request_id": "clear", "request": {"subtype": "clear"}}))
+        assert reply(emitted)["ok"]
+        assert server._display_messages == {}
+        assert server.session.conversation.messages == []
+
+
+def test_resume_without_display_messages_replaces_prior_display_errors(tmp_path):
+    server, emitted = session(tmp_path)
+    server._display_messages = {"old": [{"role": "system", "text": "old error"}]}
+    conv = Conversation()
+    conv.add_user_message("different conversation")
+    (tmp_path / "other.json").write_text(json.dumps({"conversation": conv.to_dict()}))
+    with patch("src.server.agent_server._sessions_dir", return_value=tmp_path):
+        server._do_resume("resume", "other", include_messages=True)
+    assert reply(emitted)["ok"]
+    assert server._display_messages == {}
+    assert reply(emitted)["messages"] == [{"role": "user", "text": "different conversation"}]

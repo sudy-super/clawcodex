@@ -11,6 +11,33 @@ import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 describe('toTranscriptMessages', () => {
+  it('keeps a tool-only response at the end of restored history', () => {
+    const rows = [{ role: 'user', text: 'write a file' }, { role: 'tool', name: 'Write', context: 'kept.py' }]
+
+    expect(toTranscriptMessages(rows)).toEqual([
+      { role: 'user', text: 'write a file' },
+      { kind: 'trail', role: 'system', text: '', tools: [expect.stringContaining('kept.py')] }
+    ])
+  })
+
+  it('keeps a tool-only response before the next prompt or a system error', () => {
+    const rows = [
+      { role: 'user', text: 'first prompt' },
+      { role: 'tool', name: 'Write', context: 'first.py' },
+      { role: 'user', text: 'second prompt' },
+      { role: 'tool', name: 'Read', context: 'second.py' },
+      { role: 'system', text: 'provider error' }
+    ]
+
+    expect(toTranscriptMessages(rows)).toEqual([
+      { role: 'user', text: 'first prompt' },
+      { kind: 'trail', role: 'system', text: '', tools: [expect.stringContaining('first.py')] },
+      { role: 'user', text: 'second prompt' },
+      { kind: 'trail', role: 'system', text: '', tools: [expect.stringContaining('second.py')] },
+      { role: 'system', text: 'provider error' }
+    ])
+  })
+
   it('preserves assistant tool-call rows so resume does not drop prior turns', () => {
     const rows = [
       { role: 'user', text: 'first prompt' },

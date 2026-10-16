@@ -90,10 +90,10 @@ class _TuiSession:
 
     COLS, ROWS = 140, 40
 
-    def __init__(self, tmp_path: Path, rows: int = 40):
+    def __init__(self, tmp_path: Path, rows: int = 40, server_source: str = FAKE_SERVER):
         self.ROWS = rows
         server_path = tmp_path / "fake_agent_server.py"
-        server_path.write_text(FAKE_SERVER, encoding="utf-8")
+        server_path.write_text(server_source, encoding="utf-8")
         env = {
             **os.environ,
             "TERM": "xterm-256color",
@@ -350,3 +350,134 @@ def test_rewind_to_first_prompt_keeps_logo_on_empty_history(tui):
     assert "turns: 0" in tui.dump(), tui.dump()
     assert "keep this request" in tui.row_with("❯"), tui.dump()
     assert tui.row_index("❯") >= tui.ROWS - 8, tui.dump()
+
+
+def _real_rewind_server(response_shape: str) -> str:
+    """Use the real conversation, checkpoint selection and rewind response."""
+    return "REPO = " + repr(str(REPO)) + "\nSHAPE = " + repr(response_shape) + "\n" + textwrap.dedent(
+        r"""
+        import json, sys
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        sys.path.insert(0, REPO)
+        from src.agent.conversation import Conversation
+        from src.server.agent_server import AgentServerConfig, _AgentSession
+
+        def emit(obj):
+            print(json.dumps(obj), flush=True)
+
+        workspace = Path.cwd()
+        server = _AgentSession(session_id="s1", cwd=str(workspace),
+            config=AgentServerConfig(), loop=MagicMock(), out_queue=MagicMock())
+        server._emit = emit
+        server.session = SimpleNamespace(conversation=Conversation())
+        conv = server.session.conversation
+        patch("src.server.agent_server._sessions_dir", return_value=workspace / "sessions").start()
+        emit({"type": "system", "subtype": "init", "session_id": "s1",
+              "model": "fake-model", "tools": [], "permission_mode": "default",
+              "protocol_version": "0.1.0", "cwd": str(workspace)})
+        count = 0
+        for line in sys.stdin:
+            msg = json.loads(line)
+            if msg.get("type") == "user":
+                count += 1
+                conv.add_user_message(msg["message"]["content"])
+                server._rewind_history.begin(conv.messages[-1].uuid)
+                if count == 1 and SHAPE == "error":
+                    error = "provider error FIRST_ERROR_KEPT"
+                    server._display_messages[conv.messages[-1].uuid] = [{"role": "system", "text": "error: " + error}]
+                    emit({"type": "result", "subtype": "error", "session_id": "s1",
+                          "num_turns": 0, "result": error, "error": error, "is_error": True,
+                          "duration_ms": 5, "usage": None, "cost": {}, "session_turns": 0})
+                    continue
+                if count == 2:
+                    blocks = [{"type": "text", "text": "SECOND_REPLY_REMOVED"}]
+                elif SHAPE == "blocks":
+                    blocks = [{"type": "text", "text": "KEEP_HEAD in the first text block"},
+                              {"type": "text", "text": "KEEP_TAIL in the second text block"}]
+                elif SHAPE == "long":
+                    body = "KEEP_HEAD\n\n" + "\n".join(f"- preserved line {i:03d}" for i in range(90)) + "\n\nKEEP_TAIL"
+                    blocks = [{"type": "text", "text": body}]
+                else:
+                    blocks = [{"type": "text", "text": "KEEP_HEAD and KEEP_TAIL"}]
+                if count == 1 and SHAPE == "tools":
+                    leading = [{"type": "text", "text": "KEEP_HEAD before the tool"},
+                        {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "preserved.py"}}]
+                    conv.add_assistant_message(leading)
+                    emit({"type": "assistant", "session_id": "s1", "uuid": "a-before-tool",
+                          "message": {"role": "assistant", "content": leading}})
+                    conv.add_tool_result_message("t1", "tool result")
+                    emit({"type": "user", "session_id": "s1", "message": {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "tool result"}]}})
+                    blocks = [{"type": "text", "text": "KEEP_TAIL after the tool"}]
+                if count == 1 and SHAPE == "tools_only":
+                    blocks = [{"type": "tool_use", "id": "t-only", "name": "Write", "input": {"file_path": "preserved.py"}}]
+                conv.add_assistant_message(blocks if SHAPE != "plain" else blocks[0]["text"])
+                emit({"type": "assistant", "session_id": "s1", "uuid": f"a{count}",
+                      "message": {"role": "assistant", "content": blocks}})
+                if count == 1 and SHAPE == "tools_only":
+                    conv.add_tool_result_message("t-only", "file written")
+                    emit({"type": "user", "session_id": "s1", "message": {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "t-only", "content": "file written"}]}})
+                server._stats_turns = count
+                emit({"type": "result", "subtype": "success", "session_id": "s1", "num_turns": 1,
+                      "result": "\n\n".join(block.get("text", "") for block in blocks), "duration_ms": 5, "is_error": False,
+                      "usage": None, "total_cost_usd": 0.0, "cost": {}, "session_turns": count})
+            elif msg.get("type") == "control_request":
+                req = msg.get("request") or {}
+                subtype = req.get("subtype", "")
+                if subtype == "rewind_points":
+                    server._do_rewind_points(msg["request_id"])
+                elif subtype == "rewind":
+                    server._do_rewind(msg["request_id"], req.get("message_id"), req.get("mode"))
+                    (workspace / "remaining-conversation.json").write_text(json.dumps({"conversation": conv.to_dict(), "display_messages": server._display_messages}))
+                else:
+                    emit({"type": "control_response", "response": {"subtype": subtype,
+                          "request_id": msg.get("request_id"), "response": {}}})
+        """
+    )
+
+
+@pytest.mark.parametrize("rows", [24, 40])
+@pytest.mark.parametrize("response_shape", ["plain", "blocks", "tools", "tools_only", "long", "error"])
+def test_second_prompt_rewind_preserves_real_first_response(tmp_path, rows, response_shape):
+    tui = _TuiSession(tmp_path, rows=rows, server_source=_real_rewind_server(response_shape))
+    try:
+        assert tui.wait_for("❯", 30), tui.dump()
+        marker = {"tools_only": "preserved.py", "error": "FIRST_ERROR_KEPT"}.get(response_shape, "KEEP_TAIL")
+        tui.submit("FIRST_REQUEST_KEPT", marker)
+        tui.submit("SECOND_REQUEST_EDIT", "SECOND_REPLY_REMOVED")
+        tui.submit("/rewind", "Restore the code and/or conversation to the point before…")
+        tui.send("\x1b[A")
+        tui.pump(0.2)
+        tui.send("\r")
+        assert tui.wait_for("Restore to before this message?", 5), tui.dump()
+        tui.send("\r")
+        assert tui.wait_for("turns: 1", 5), tui.dump()
+        tui.pump(0.4)
+        persisted = (tmp_path / "remaining-conversation.json").read_text()
+        assert "FIRST_REQUEST_KEPT" in persisted
+        if response_shape == "tools_only":
+            assert '"name": "Write"' in persisted and "preserved.py" in persisted
+        elif response_shape == "error":
+            assert "FIRST_ERROR_KEPT" in persisted
+        else:
+            assert "KEEP_HEAD" in persisted and "KEEP_TAIL" in persisted
+        assert "SECOND_REQUEST_EDIT" not in persisted
+        assert "SECOND_REPLY_REMOVED" not in persisted
+        assert "SECOND_REPLY_REMOVED" not in tui.dump(), tui.dump()
+        assert marker in tui.dump(), tui.dump()
+        if response_shape == "long":
+            assert "KEEP_HEAD" not in tui.dump(), tui.dump()
+            for _ in range(25):
+                tui.send("\x1b[5~")
+                tui.pump(0.1)
+                if "KEEP_HEAD" in tui.dump():
+                    break
+            assert "KEEP_HEAD" in tui.dump(), tui.dump()
+        elif response_shape not in ("tools_only", "error"):
+            assert "KEEP_HEAD" in tui.dump(), tui.dump()
+        assert "SECOND_REQUEST_EDIT" in tui.screen.display[tui.row_index("❯")], tui.dump()
+    finally:
+        tui.close()

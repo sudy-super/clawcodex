@@ -196,6 +196,7 @@ class _AgentSession:
     tool_registry: Any = None
     tool_context: Any = None
     _rewind_history: RewindHistory = field(default_factory=RewindHistory)
+    _display_messages: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     # ch03 round-4 GAP A — per-session reactive AppState store (the book's
     # §3.2 tier). Attached only on single-session transports; None on
     # --http, where the centralized on_change side effects (user-level
@@ -1065,6 +1066,7 @@ class _AgentSession:
                 if self.session is not None:
                     self.session.conversation.clear()
                 self._rewind_history = RewindHistory()
+                self._display_messages.clear()
                 # An image or file attached but never sent belongs to the
                 # conversation the user just discarded; carrying it into the
                 # fresh one would silently attach it to an unrelated prompt.
@@ -1759,6 +1761,7 @@ class _AgentSession:
                 "mode": mode_value,
                 "conversation": self.session.conversation.to_dict(),
                 "rewind_history": self._rewind_history.records,
+                "display_messages": self._display_messages,
                 # Turns odometer — _do_resume prefers this exact counter over
                 # recounting the conversation (which can't tell a real prompt
                 # from a persisted notification/hook-context message).
@@ -3428,8 +3431,10 @@ class _AgentSession:
 
             data = json.loads(f.read_text(encoding="utf-8"))
             conv = Conversation.from_dict(data.get("conversation", {"messages": []}))
+            display_messages = _load_display_messages(data.get("display_messages", {}))
             self.session.conversation = conv
             self._rewind_history = RewindHistory(data.get("rewind_history", {}))
+            self._display_messages = display_messages
             # Same reasoning as /clear: an image or file attached but never
             # sent belongs to the conversation being switched away from.
             # Carrying it over would attach it to the first prompt of the
@@ -3623,7 +3628,7 @@ class _AgentSession:
                 # Also pushed as a cron_status line above; carried here too for
                 # a client that repaints the transcript once this reply lands.
                 **({"cron_notice": cron_notice} if cron_notice else {}),
-                **({"messages": _transcript_rows(conv.messages)} if include_messages else {}),
+                **({"messages": _transcript_rows(conv.messages, self._display_messages)} if include_messages else {}),
             })
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] resume failed")
@@ -3686,6 +3691,8 @@ class _AgentSession:
             if mode in ("conversation", "both"):
                 removed = len(msgs) - target
                 del msgs[target:]
+                retained_ids = {m.uuid for m in msgs if _is_rewind_prompt(m)}
+                self._display_messages = {mid: rows for mid, rows in self._display_messages.items() if mid in retained_ids}
                 self._stats_turns = _count_prompt_turns(msgs)
                 self._recap_serial += 1
                 with self._lock:
@@ -3697,7 +3704,7 @@ class _AgentSession:
             self._save_session(allow_empty=True)
             self._reply(request_id, {
                 "ok": True, "mode": mode, "removed": removed, "count": len(msgs),
-                "messages": _transcript_rows(msgs), "session_turns": self._stats_turns,
+                "messages": _transcript_rows(msgs, self._display_messages), "session_turns": self._stats_turns,
                 "prompt": prompt, "restored_files": restored,
             })
         except Exception as exc:  # noqa: BLE001
@@ -5680,6 +5687,7 @@ class _AgentSession:
         # (drops the ephemeral Q + A on every exit path via the finally below).
         _btw_snapshot = list(self.session.conversation.messages) if btw else None
         self.session.conversation.add_user_message(prompt)
+        prompt_id = self.session.conversation.messages[-1].uuid
         if not internal and not btw:
             self._rewind_history.begin(self.session.conversation.messages[-1].uuid)
         if self.tool_context is not None:
@@ -5692,7 +5700,10 @@ class _AgentSession:
             )
         start = time.monotonic()
 
+        streamed_text: list[str] = []
+
         def on_text_chunk(chunk: str) -> None:
+            streamed_text.append(chunk)
             self._emit({
                 "type": "stream_event",
                 "session_id": self.session_id,
@@ -5729,6 +5740,8 @@ class _AgentSession:
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("[agent-server] persist failed")
+            if getattr(message, "role", None) == "assistant":
+                streamed_text.clear()
             env = _sdk_envelope(message, self.session_id)
             if env is not None:
                 self._emit(env)
@@ -5807,6 +5820,12 @@ class _AgentSession:
             return {"subtype": "cancelled", "response_text": ""}
         except Exception as exc:  # noqa: BLE001 - one bad turn must not kill the session
             logger.exception("[agent-server] turn failed")
+            if not btw:
+                display_rows = self._display_messages.setdefault(prompt_id, [])
+                if streamed_text:
+                    display_rows.append({"role": "assistant", "text": "".join(streamed_text)})
+                display_rows.append({"role": "system", "text": f"error: {exc}"})
+                self._save_session()
             self._emit(_result_message(
                 self.session_id,
                 permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="error", num_turns=0,
@@ -5868,6 +5887,11 @@ class _AgentSession:
         )
         _subtype = EARLY_STOP_SUBTYPES.get(_stop or "", "success")
         _is_error = _subtype != "success"
+        if _is_error and not btw:
+            display_rows = self._display_messages.setdefault(prompt_id, [])
+            if result.response_text and result.response_text != self._message_text(self.session.conversation.messages[-1]):
+                display_rows.append({"role": "assistant", "text": result.response_text})
+            display_rows.append({"role": "system", "text": f"error: run stopped early ({_subtype})"})
         self._emit(_result_message(
             self.session_id,
             permission_mode=_current_mode(self.tool_context, self.config.permission_mode),
@@ -7147,7 +7171,7 @@ _TOOL_CONTEXT_FIELDS = (
 )
 
 
-def _transcript_rows(msgs: list) -> list[dict]:
+def _transcript_rows(msgs: list, display_messages: dict[str, list[dict[str, str]]] | None = None) -> list[dict]:
     """A saved conversation as the TUI's transcript rows: prompts and replies
     as ``{role, text}``, each tool call as ``{role: "tool", name, input}``.
 
@@ -7165,7 +7189,12 @@ def _transcript_rows(msgs: list) -> list[dict]:
         return role == "user" and text.lstrip().startswith("<system-reminder>")
 
     rows: list[dict] = []
+    current_prompt: str | None = None
     for m in msgs:
+        if _is_rewind_prompt(m):
+            if current_prompt is not None and display_messages is not None:
+                rows.extend(display_messages.get(current_prompt, []))
+            current_prompt = m.uuid
         role = getattr(m, "role", None)
         if role not in ("user", "assistant") or getattr(m, "isMeta", False) \
                 or getattr(m, "isCompactSummary", False):
@@ -7186,7 +7215,21 @@ def _transcript_rows(msgs: list) -> list[dict]:
                     if key in _TOOL_CONTEXT_FIELDS and isinstance(value, (str, int, float))
                 }
                 rows.append({"role": "tool", "name": str(field(block, "name") or "tool"), "input": summary})
+    if current_prompt is not None and display_messages is not None:
+        rows.extend(display_messages.get(current_prompt, []))
     return rows
+
+
+def _load_display_messages(value: Any) -> dict[str, list[dict[str, str]]]:
+    if not isinstance(value, dict):
+        raise ValueError("Invalid saved display messages")
+    for message_id, rows in value.items():
+        if not isinstance(message_id, str) or not isinstance(rows, list):
+            raise ValueError("Invalid saved display message entry")
+        for row in rows:
+            if not isinstance(row, dict) or row.get("role") not in ("assistant", "system") or not isinstance(row.get("text"), str):
+                raise ValueError("Invalid saved display message row")
+    return value
 
 
 def _is_rewind_prompt(message: Any) -> bool:
