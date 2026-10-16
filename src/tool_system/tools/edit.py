@@ -8,6 +8,8 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from src.server.rewind import write_tracked_file
+
 from ..build_tool import Tool, build_tool
 from ..context import ToolContext
 from ..diff_utils import (
@@ -241,7 +243,7 @@ def _edit_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         if path.exists():
             raise ToolInputError("old_string is empty but file already exists -- use non-empty old_string to edit")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new_string, encoding="utf-8")
+        write_tracked_file(context, path, new_string)
         context.mark_file_read(path)
         # The original's edit-create counts the real '' -> content patch
         # (FileEditTool.ts:534 -> getPatchForEdit -> countLinesChanged),
@@ -316,7 +318,7 @@ def _edit_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
 
     updated = _apply_edit(original, actual_old, new_string, replace_all)
 
-    path.write_text(updated, encoding="utf-8")
+    write_tracked_file(context, path, updated)
     context.mark_file_read(path)
 
     before_lines = convert_leading_tabs_to_spaces(original).splitlines(keepends=True)

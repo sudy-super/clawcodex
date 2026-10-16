@@ -33,7 +33,8 @@ def _make_session() -> tuple[_AgentSession, list[dict]]:
     )
     sess._emit = lambda env: emitted.append(env)  # type: ignore[method-assign]
     sess.session = MagicMock()
-    sess.session.conversation.messages = []
+    from src.agent.conversation import Conversation
+    sess.session.conversation = Conversation()
     sess.provider = MagicMock()
     sess.tool_context = SimpleNamespace(workspace_root="/tmp", cwd="/tmp")
     registry = MagicMock()

@@ -924,3 +924,31 @@ export type GatewayEvent =
   | { payload: { goal: GoalSnapshot | null; rev?: number }; session_id?: string; type: 'goal.state' }
   | { payload: { scheduled: CronSnapshot | null }; session_id?: string; type: 'cron.state' }
   | { payload?: { message?: string }; session_id?: string; type: 'error' }
+
+export type RewindMode = 'conversation' | 'code' | 'both'
+
+export interface RewindPoint {
+  message_id: string
+  text: string
+  timestamp: string | null
+  files: string[]
+  added: number
+  removed: number
+  can_restore_code: boolean
+}
+
+export interface RewindPointsResponse {
+  ok: boolean
+  points: RewindPoint[]
+  error?: string
+}
+
+export interface RewindResponse {
+  ok: boolean
+  messages: GatewayTranscriptMessage[]
+  session_turns: number
+  removed: number
+  prompt: string
+  restored_files: string[]
+  error?: string
+}

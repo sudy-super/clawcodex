@@ -23,6 +23,22 @@ import type { SlashCommand } from '../types.js'
 
 export const sessionCommands: SlashCommand[] = [
   {
+    help: 'restore code or conversation to an earlier message',
+    name: 'rewind',
+    run: (arg, ctx) => {
+      if (arg.trim()) {
+        return ctx.transcript.sys('usage: /rewind')
+      }
+
+      if (ctx.session.guardBusySessionSwitch('rewind')) {
+        return
+      }
+
+      patchOverlayState({ rewindPicker: true })
+    }
+  },
+
+  {
     aliases: ['bg', 'btw'],
     argumentHint: '<prompt>',
     help: 'launch a background prompt',

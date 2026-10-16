@@ -20,6 +20,7 @@ import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt, PlanApprovalPrompt } from './prompts.js'
 import { QuestionPrompt } from './questionPrompt.js'
+import { RewindPicker } from './rewindPicker.js'
 import { SkillsHub } from './skillsHub.js'
 import { WorktreeExitPrompt } from './worktreeExitPrompt.js'
 
@@ -170,6 +171,7 @@ export function FloatingOverlays({
   onActiveSessionClose,
   onLogoSelect,
   onMemorySelect,
+  onRewindRestored,
   onModelSelect,
   onNewLiveSession,
   onNewPromptSession,
@@ -185,6 +187,7 @@ export function FloatingOverlays({
   | 'onActiveSessionClose'
   | 'onLogoSelect'
   | 'onMemorySelect'
+  | 'onRewindRestored'
   | 'onModelSelect'
   | 'onNewLiveSession'
   | 'onNewPromptSession'
@@ -202,6 +205,7 @@ export function FloatingOverlays({
   const hasAny =
     overlay.logoPicker ||
     overlay.memoryPicker ||
+    overlay.rewindPicker ||
     overlay.modelPicker ||
     overlay.permissionsPicker ||
     overlay.pager ||
@@ -269,6 +273,18 @@ export function FloatingOverlays({
             current={permissionMode}
             onClose={() => patchOverlayState({ permissionsPicker: false })}
             onSelect={onPermissionsSelect}
+            t={theme}
+          />
+        </FloatBox>
+      )}
+
+      {overlay.rewindPicker && (
+        <FloatBox color={theme.color.accent}>
+          <RewindPicker
+            gw={gw}
+            onCancel={() => patchOverlayState({ rewindPicker: false })}
+            onRestored={onRewindRestored}
+            sessionId={sid}
             t={theme}
           />
         </FloatBox>

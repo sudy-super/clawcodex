@@ -71,6 +71,7 @@ class ToolContext:
         default_factory=lambda: ToolPermissionContext(mode="bypassPermissions")
     )
     cwd: Path | None = None
+    rewind_history: Any = None
     read_file_fingerprints: dict[Path, tuple[int, int] | tuple[int, int, bool]] = field(default_factory=dict)
     task_manager: TaskManager = field(default_factory=TaskManager)
     mcp_clients: dict[str, Any] = field(default_factory=dict)

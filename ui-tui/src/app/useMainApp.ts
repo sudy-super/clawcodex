@@ -15,10 +15,11 @@ import { STARTUP_RESUME_ID, TRANSCRIPT_COLOR } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { hasLeadGap, prevRenderedMsg, showsInterTurnSeparator } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
-import { attachedImageNotice } from '../domain/messages.js'
+import { attachedImageNotice, toTranscriptMessages } from '../domain/messages.js'
 import { infoAfterModelSwitch, modelPickerCommands, modelSwitchNotice } from '../domain/modelSwitch.js'
 import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
+import type { RewindMode, RewindResponse } from '../gatewayTypes.js'
 import type {
   ClarifyRespondResponse,
   ClipboardPasteResponse,
@@ -1145,6 +1146,29 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.secret, respondWith]
   )
 
+  const onRewindRestored = useCallback(
+    (result: RewindResponse, mode: RewindMode) => {
+      if (mode !== 'code') {
+        turnController.reset()
+        heightCachesRef.current.clear()
+        setHistoryItems(toTranscriptMessages(result.messages))
+        setLastUserMsg('')
+        setStickyPrompt('')
+        composerActions.setInput(result.prompt)
+        patchUiState(state => ({
+          ...state,
+          pendingSuggestion: null,
+          status: 'ready',
+          sessionStats: { ...state.sessionStats, turns: result.session_turns }
+        }))
+        scrollRef.current?.scrollToBottom()
+      }
+
+      patchOverlayState({ rewindPicker: false })
+    },
+    [composerActions]
+  )
+
   const onModelSelect = useCallback((value: string, effort?: string) => {
     patchOverlayState({ modelPicker: false })
 
@@ -1288,6 +1312,7 @@ export function useMainApp(gw: GatewayClient) {
       newPromptSession,
       onLogoSelect,
       onMemorySelect,
+      onRewindRestored,
       onModelSelect,
       onPermissionsSelect,
       // Resuming a cold session from the overlay CLOSES the current one, so it
@@ -1315,6 +1340,7 @@ export function useMainApp(gw: GatewayClient) {
       newPromptSession,
       onLogoSelect,
       onMemorySelect,
+      onRewindRestored,
       onModelSelect,
       onPermissionsSelect,
       session

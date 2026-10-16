@@ -37,7 +37,8 @@ def _make_session() -> tuple[_AgentSession, list[dict], Clock]:
     )
     sess._emit = lambda env: emitted.append(env)  # type: ignore[method-assign]
     sess.session = MagicMock()
-    sess.session.conversation.messages = []
+    from src.agent.conversation import Conversation
+    sess.session.conversation = Conversation()
     sess.tool_context = SimpleNamespace(workspace_trusted=True)
     sess._save_session = lambda: None  # type: ignore[method-assign]
     clock = Clock()

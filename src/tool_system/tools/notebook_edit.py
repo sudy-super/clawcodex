@@ -15,6 +15,8 @@ import string
 from pathlib import Path
 from typing import Any
 
+from src.server.rewind import write_tracked_file
+
 from ..build_tool import Tool, build_tool
 from ..context import ToolContext
 from ..errors import ToolInputError, ToolPermissionError
@@ -229,7 +231,7 @@ def _notebook_edit_call(tool_input: dict[str, Any], context: ToolContext) -> Too
     notebook["cells"] = cells
     updated_content = json.dumps(notebook, indent=IPYNB_INDENT, ensure_ascii=False) + "\n"
 
-    path.write_text(updated_content, encoding="utf-8")
+    write_tracked_file(context, path, updated_content)
     context.mark_file_read(path)
 
     return ToolResult(

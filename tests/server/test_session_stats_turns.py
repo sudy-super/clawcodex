@@ -90,7 +90,8 @@ class TestRunTurnOdometer(unittest.TestCase):
         )
         sess._emit = lambda env: emitted.append(env)
         sess.session = MagicMock()
-        sess.session.conversation.messages = []
+        from src.agent.conversation import Conversation
+        sess.session.conversation = Conversation()
         sess._run_user_prompt_submit_hooks = lambda p: None
         sess._fire_session_start_once = lambda: None
         sess._build_turn_pipeline_config = lambda provider: None
@@ -211,7 +212,13 @@ class TestLifecycleSync(unittest.TestCase):
             conv.add_user_message(f"prompt {i}")
             conv.add_assistant_message(f"answer {i}")
         sess._stats_turns = 3
-        sess._do_rewind("r1", 2)
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td, patch(
+            "src.server.agent_server._sessions_dir", return_value=Path(td)
+        ):
+            sess._do_rewind("r1", conv.messages[2].uuid)
         self.assertEqual(sess._stats_turns, 1)
         self.assertEqual(_count_prompt_turns(conv.messages), 1)
 

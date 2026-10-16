@@ -3,7 +3,7 @@ import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'rea
 
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { BillingStateResponse, ImageAttachResponse, SessionCloseResponse } from '../gatewayTypes.js'
+import type { BillingStateResponse, ImageAttachResponse, RewindMode, RewindResponse, SessionCloseResponse } from '../gatewayTypes.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { SessionStats } from '../lib/sessionStats.js'
@@ -144,6 +144,7 @@ export interface OverlayState {
   confirm: ConfirmReq | null
   logoPicker: boolean
   memoryPicker: boolean
+  rewindPicker: boolean
   modelPicker: boolean
   pager: null | PagerState
   permissionsPicker: boolean
@@ -428,6 +429,7 @@ export interface AppLayoutActions {
   newPromptSession: (prompt: string, modelArg?: string) => void
   onLogoSelect: (value: string) => void
   onMemorySelect: (path: string) => void
+  onRewindRestored: (result: RewindResponse, mode: RewindMode) => void
   onModelSelect: (value: string) => void
   onPermissionsSelect: (levelKey: string) => void
   resumeById: (id: string) => void
@@ -495,6 +497,7 @@ export interface AppOverlaysProps {
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onLogoSelect: (value: string) => void
   onMemorySelect: (path: string) => void
+  onRewindRestored: (result: RewindResponse, mode: RewindMode) => void
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void

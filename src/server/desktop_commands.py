@@ -26,7 +26,7 @@ BUILTIN_COMMANDS: list[tuple[str, str]] = [
     ("/context", "Show context-window usage"),
     ("/cost", "Show the total cost and duration of the current session"),
     ("/eco", "Toggle Bash-output token compression (RTK-style)"),
-    ("/rewind", "Undo recent turns"),
+    ("/rewind", "Restore a previous message"),
     ("/thinking", "Toggle extended thinking"),
     ("/effort", "Set reasoning effort (or \"ultracode\" workflow mode)"),
     ("/provider", "Switch the provider"),
@@ -52,7 +52,7 @@ BUILTIN_COMMANDS: list[tuple[str, str]] = [
 COMMAND_HINTS: dict[str, str] = {
     "/output-style": "[<name>]",
     "/eco": "[on|off|status]",
-    "/rewind": "[<turns>]",
+    "/rewind": "",
     "/thinking": "[on|off|toggle]",
     "/effort": "[low|medium|high|xhigh|max|auto|ultracode]",
     "/provider": "[<provider>]",

@@ -4,6 +4,8 @@ import difflib
 from pathlib import Path
 from typing import Any
 
+from src.server.rewind import write_tracked_file
+
 from ..build_tool import Tool, ValidationResult, build_tool
 from ..context import ToolContext
 from ..errors import ToolInputError, ToolPermissionError
@@ -243,7 +245,7 @@ def _write_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         original_file = path.read_text(encoding="utf-8", errors="replace")
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    write_tracked_file(context, path, content)
     context.mark_file_read(path)
     before_lines = convert_leading_tabs_to_spaces(original_file or "").splitlines(keepends=True)
     after_lines = convert_leading_tabs_to_spaces(content).splitlines(keepends=True)

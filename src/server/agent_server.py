@@ -78,6 +78,7 @@ from src.scheduled_tasks import (
     SessionCronScheduler,
 )
 from src.server.server import AgentHandle
+from src.server.rewind import RewindHistory
 from src.utils.abort_controller import AbortController, AbortError
 
 logger = logging.getLogger(__name__)
@@ -194,6 +195,7 @@ class _AgentSession:
     provider_name: str = ""
     tool_registry: Any = None
     tool_context: Any = None
+    _rewind_history: RewindHistory = field(default_factory=RewindHistory)
     # ch03 round-4 GAP A — per-session reactive AppState store (the book's
     # §3.2 tier). Attached only on single-session transports; None on
     # --http, where the centralized on_change side effects (user-level
@@ -808,8 +810,11 @@ class _AgentSession:
         if subtype == "compact":
             await self._do_compact(request_id, inner.get("instructions"))
             return
+        if subtype == "rewind_points":
+            self._do_rewind_points(request_id)
+            return
         if subtype == "rewind":
-            self._do_rewind(request_id, inner.get("turns", 1))
+            self._do_rewind(request_id, inner.get("message_id"), inner.get("mode", "conversation"))
             return
         if subtype == "list_sessions":
             # Parses every saved session file, so it runs off the loop.
@@ -1059,6 +1064,7 @@ class _AgentSession:
             try:
                 if self.session is not None:
                     self.session.conversation.clear()
+                self._rewind_history = RewindHistory()
                 # An image or file attached but never sent belongs to the
                 # conversation the user just discarded; carrying it into the
                 # fresh one would silently attach it to an unrelated prompt.
@@ -1709,15 +1715,16 @@ class _AgentSession:
         AgentProgressLine). Wired onto tool_context.agent_progress_emit."""
         self._emit({"type": "agent_progress", "session_id": self.session_id, **ev})
 
-    def _save_session(self) -> None:
+    def _save_session(self, *, allow_empty: bool = False) -> bool:
         """Persist the conversation to disk so it can be /resume'd. Best-effort,
         called at each turn end."""
+        saved = False
         try:
             if self.session is None:
-                return
+                return False
             msgs = self.session.conversation.messages
-            if not msgs:
-                return
+            if not msgs and not allow_empty:
+                return False
             d = _sessions_dir()
             d.mkdir(parents=True, exist_ok=True)
             # Scoped so a (theoretical) import failure costs only the mode
@@ -1751,6 +1758,7 @@ class _AgentSession:
                 # re-stamp sites.
                 "mode": mode_value,
                 "conversation": self.session.conversation.to_dict(),
+                "rewind_history": self._rewind_history.records,
                 # Turns odometer — _do_resume prefers this exact counter over
                 # recounting the conversation (which can't tell a real prompt
                 # from a persisted notification/hook-context message).
@@ -1796,9 +1804,11 @@ class _AgentSession:
                 except Exception:  # noqa: BLE001 — cost snapshot is best-effort
                     logger.debug("[agent-server] cost snapshot failed", exc_info=True)
             (d / f"{self.session_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+            saved = True
         except Exception:  # noqa: BLE001 — persistence must never break a turn
             logger.debug("[agent-server] session save failed", exc_info=True)
         self._record_knowledge()
+        return saved
 
     @staticmethod
     def _message_text(msg: object) -> str:
@@ -3419,6 +3429,7 @@ class _AgentSession:
             data = json.loads(f.read_text(encoding="utf-8"))
             conv = Conversation.from_dict(data.get("conversation", {"messages": []}))
             self.session.conversation = conv
+            self._rewind_history = RewindHistory(data.get("rewind_history", {}))
             # Same reasoning as /clear: an image or file attached but never
             # sent belongs to the conversation being switched away from.
             # Carrying it over would attach it to the first prompt of the
@@ -3618,53 +3629,77 @@ class _AgentSession:
             logger.exception("[agent-server] resume failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
-    def _do_rewind(self, request_id: object, turns: object) -> None:
-        """Drop the last N prompt-turns from the conversation (the original's
-        /rewind). A prompt-turn starts at a real user prompt (string/text
-        content — not a tool_result, which is also role 'user') and runs to the
-        end. Idle-only: the worker mutates the conversation during a turn."""
+    def _rewind_busy(self) -> bool:
         with self._lock:
-            active = self._current_abort is not None
-        if active:
-            self._reply(request_id, {"ok": False, "error": "cannot rewind during an active turn"})
+            if self._current_abort is not None or not self._inbox.empty():
+                return True
+        if self._bgtasks is not None and any(
+            getattr(task, "status", "") == "running" for task in self._bgtasks.list()
+        ):
+            return True
+        supervisor = getattr(self.tool_context, "agent_supervisor", None)
+        return supervisor is not None and bool(supervisor.snapshot()["active"])
+
+    def _do_rewind_points(self, request_id: object) -> None:
+        if self._rewind_busy():
+            self._reply(request_id, {"ok": False, "error": "cannot rewind while work is running or queued"})
+            return
+        msgs = self.session.conversation.messages if self.session is not None else []
+        prompts = [m for m in msgs if _is_rewind_prompt(m)]
+        points = []
+        for i, message in enumerate(prompts):
+            points.append({
+                "message_id": message.uuid,
+                "text": self._message_text(message),
+                "timestamp": getattr(message, "timestamp", ""),
+                **self._rewind_history.preview(self._rewind_history.since([m.uuid for m in prompts[i:]])),
+            })
+        self._reply(request_id, {"ok": True, "points": points})
+
+    def _do_rewind(self, request_id: object, message_id: object, mode: object = "conversation") -> None:
+        """Restore the state before a selected real user message."""
+        if self._rewind_busy():
+            self._reply(request_id, {"ok": False, "error": "cannot rewind while work is running or queued"})
             return
         try:
-            n = int(turns) if isinstance(turns, (int, float)) else 1
-            n = max(1, n)
+            if mode not in ("conversation", "code", "both"):
+                raise ValueError("invalid rewind mode")
             msgs = self.session.conversation.messages if self.session is not None else []
-
-            def is_prompt(m: Any) -> bool:
-                if getattr(m, "role", None) != "user":
-                    return False
-                # Injected context (plan-mode / task-reminder attachments) is
-                # not a rewind boundary — without this, /rewind 1 lands on the
-                # most recent reminder instead of the user's actual message.
-                if getattr(m, "isMeta", False):
-                    return False
-                c = getattr(m, "content", None)
-                if isinstance(c, str):
-                    return True
-                if isinstance(c, list):
-                    for b in c:
-                        t = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
-                        if t == "text":
-                            return True
-                return False
-
-            prompt_idxs = [i for i, m in enumerate(msgs) if is_prompt(m)]
-            if not prompt_idxs:
-                self._reply(request_id, {"ok": True, "removed": 0, "count": len(msgs)})
-                return
-            target = prompt_idxs[max(0, len(prompt_idxs) - n)]
-            removed = len(msgs) - target
-            del msgs[target:]
-            # Rewound turns leave the odometer — recount from what's left.
-            # `is_prompt` and `_count_prompt_turns` now apply the same isMeta
-            # exclusion, so the recount matches the boundaries rewind saw.
-            self._stats_turns = _count_prompt_turns(msgs)
-            # Conversation identity changed — kill any in-flight recap.
-            self._recap_serial += 1
-            self._reply(request_id, {"ok": True, "removed": removed, "count": len(msgs)})
+            target = next((i for i, m in enumerate(msgs)
+                           if _is_rewind_prompt(m) and m.uuid == message_id), None)
+            if target is None:
+                raise ValueError("rewind message not found")
+            prompt = self._message_text(msgs[target])
+            ids = self._rewind_history.since([m.uuid for m in msgs[target:] if _is_rewind_prompt(m)])
+            # Keep an independent original in /resume before mutating the live conversation.
+            if not self._save_session():
+                raise ValueError("Cannot preserve the conversation before rewind")
+            original = _sessions_dir() / f"{self.session_id}.json"
+            if original.exists():
+                archived = json.loads(original.read_text(encoding="utf-8"))
+                archive_id = str(_uuid.uuid4())
+                archived["session_id"] = archive_id
+                archived["name"] = (self._session_name or _first_prompt_preview(msgs)) + " (before rewind)"
+                (_sessions_dir() / f"{archive_id}.json").write_text(json.dumps(archived), encoding="utf-8")
+            restored = self._rewind_history.restore(ids) if mode in ("code", "both") else []
+            removed = 0
+            if mode in ("conversation", "both"):
+                removed = len(msgs) - target
+                del msgs[target:]
+                self._stats_turns = _count_prompt_turns(msgs)
+                self._recap_serial += 1
+                with self._lock:
+                    self._pending_images = []
+                    dropped_files, self._pending_files = self._pending_files, []
+                self._discard_pending_files(dropped_files)
+            if restored and self.tool_context is not None:
+                self.tool_context.read_file_fingerprints.clear()
+            self._save_session(allow_empty=True)
+            self._reply(request_id, {
+                "ok": True, "mode": mode, "removed": removed, "count": len(msgs),
+                "messages": _transcript_rows(msgs), "session_turns": self._stats_turns,
+                "prompt": prompt, "restored_files": restored,
+            })
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] rewind failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
@@ -5645,6 +5680,10 @@ class _AgentSession:
         # (drops the ephemeral Q + A on every exit path via the finally below).
         _btw_snapshot = list(self.session.conversation.messages) if btw else None
         self.session.conversation.add_user_message(prompt)
+        if not internal and not btw:
+            self._rewind_history.begin(self.session.conversation.messages[-1].uuid)
+        if self.tool_context is not None:
+            self.tool_context.rewind_history = self._rewind_history if not btw else None
         # Inject any UserPromptSubmit additionalContext as a system-reminder
         # user message right after the prompt (the model reads it as context).
         for _ctx in _ups_contexts:
@@ -5777,6 +5816,7 @@ class _AgentSession:
             ))
             return {"subtype": "error", "response_text": ""}
         finally:
+            self._rewind_history.active = None
             with self._lock:
                 self._current_abort = None
             if btw and _btw_snapshot is not None:
@@ -7147,6 +7187,19 @@ def _transcript_rows(msgs: list) -> list[dict]:
                 }
                 rows.append({"role": "tool", "name": str(field(block, "name") or "tool"), "input": summary})
     return rows
+
+
+def _is_rewind_prompt(message: Any) -> bool:
+    if getattr(message, "role", None) != "user" or getattr(message, "isMeta", False) \
+            or getattr(message, "isCompactSummary", False):
+        return False
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return not content.lstrip().startswith("<system-reminder>")
+    if isinstance(content, list):
+        return any((b.get("type") if isinstance(b, dict) else getattr(b, "type", None)) == "text"
+                   for b in content)
+    return False
 
 
 def _count_prompt_turns(msgs: list) -> int:

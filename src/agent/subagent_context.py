@@ -175,6 +175,7 @@ def create_subagent_context(
         workspace_root=parent_context.workspace_root,
         permission_context=permission_context,
         cwd=parent_context.cwd,
+        rewind_history=parent_context.rewind_history,
         worktree_root=parent_context.worktree_root,
         read_file_fingerprints=read_file_fingerprints,
         task_manager=parent_context.task_manager,

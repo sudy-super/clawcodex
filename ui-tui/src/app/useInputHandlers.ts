@@ -138,6 +138,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const overlay = useStore($overlayState)
   const isBlocked = useStore($isBlocked)
   const pagerPageSize = Math.max(5, (terminal.stdout?.rows ?? 24) - 6)
+  const lastEscapeRef = useRef(0)
   const scrollIdleTimer = useRef<null | ReturnType<typeof setTimeout>>(null)
 
   // Wheel accel ported from claude-code: inter-event timing drives step size,
@@ -231,6 +232,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.logoPicker) {
       return patchOverlayState({ logoPicker: false })
+    }
+
+    if (overlay.rewindPicker) {
+      return patchOverlayState({ rewindPicker: false })
     }
 
     if (overlay.memoryPicker) {
@@ -560,6 +565,21 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       return
     }
+
+    if (key.escape && !live.busy && live.sid && !cState.input) {
+      const now = Date.now()
+
+      if (lastEscapeRef.current && now - lastEscapeRef.current <= 500) {
+        lastEscapeRef.current = 0
+        patchOverlayState({ rewindPicker: true })
+      } else {
+        lastEscapeRef.current = now
+      }
+
+      return
+    }
+
+    lastEscapeRef.current = 0
 
     if (key.upArrow) {
       const inputSel = getInputSelection()

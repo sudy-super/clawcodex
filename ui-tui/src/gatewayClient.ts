@@ -29,6 +29,7 @@ import type {
   GatewayTranscriptMessage,
   GoalSnapshot,
   PatchHunk,
+  RewindResponse,
   SessionListItem,
   SessionResumeResponse,
   StructuredDiffPayload
@@ -845,7 +846,7 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   // reaches the completion menu; per the shadowing note above it carries no
   // hint (the local argumentHint is authoritative).
   { desc: 'Toggle the end-of-turn recap + suggested next prompt', name: '/recap' },
-  { desc: 'Undo recent turns', hint: '[<turns>]', name: '/rewind' },
+  { desc: 'Restore code or conversation to an earlier message', name: '/rewind' },
   { desc: 'Toggle extended thinking', hint: '[on|off|toggle]', name: '/thinking' },
   {
     desc: 'Set reasoning effort (or "ultracode" workflow mode)',
@@ -1490,6 +1491,15 @@ export class GatewayClient extends EventEmitter {
         )
 
       // ── /memory picker (backend enumerates; the TUI owns the editor) ─────
+      case 'rewind.points':
+        return this.controlQuery('rewind_points', {}).then(r => r as T)
+
+      case 'rewind.restore':
+        return this.controlQuery('rewind', { message_id: p.message_id, mode: p.mode }, SESSION_RPC_TIMEOUT_MS).then(raw => {
+          const result = raw as RewindResponse | null
+          return (result?.ok ? { ...result, messages: toResumedTranscript(result.messages) } : result) as T
+        })
+
       case 'memory.targets':
         return this.controlQuery('memory_targets', {}).then(
           r => (r ?? { error: 'no response from backend', ok: false, targets: [] }) as T
@@ -2133,12 +2143,6 @@ export class GatewayClient extends EventEmitter {
         const r = (await this.controlQuery('set_provider', { provider: arg })) as any
 
         return out(`Provider: ${r?.provider ?? arg ?? '(unchanged)'}${r?.model ? ` (model ${r.model})` : ''}.`)
-      }
-
-      case 'rewind': {
-        const r = (await this.controlQuery('rewind', { turns: arg ? Number(arg) || 1 : 1 })) as any
-
-        return out(`Rewound ${r?.removed ?? 0} turn(s).`)
       }
 
       case 'thinking': {

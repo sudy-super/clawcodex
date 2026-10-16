@@ -109,9 +109,7 @@ async def dispatch_slash(control: ControlQuery, name: str, arg: str | None) -> d
             return _out(f"Provider: {r.get('provider', arg or '(unchanged)')}{model}.")
 
         if name in ("rewind", "undo"):
-            r = await control("rewind", {"turns": _num(arg)})
-            r = r if isinstance(r, dict) else {}
-            return _out(f"Rewound {r.get('removed', 0)} turn(s).")
+            return _out("Open the TUI rewind picker with /rewind or press Esc twice.")
 
         if name == "insights":
             r = await control("insights", {})

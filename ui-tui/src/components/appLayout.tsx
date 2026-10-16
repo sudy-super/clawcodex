@@ -311,6 +311,7 @@ const ComposerPane = memo(function ComposerPane({
           onNewPromptSession={actions.newPromptSession}
           onPermissionsSelect={actions.onPermissionsSelect}
           onResumeSelect={actions.resumeById}
+          onRewindRestored={actions.onRewindRestored}
           pagerPageSize={composer.pagerPageSize}
         />
 

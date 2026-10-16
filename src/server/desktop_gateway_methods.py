@@ -1677,27 +1677,18 @@ class GatewayConnection:
         return {"ok": True}
 
     async def session_rewind(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Drop the last N prompt-turns from the conversation (the CLI's /rewind).
-
-        Reports ``removed`` so the client can trim its own transcript by the
-        same amount instead of guessing. The agent refuses this during an
-        active turn — it mutates the conversation the worker is reading — and
-        that refusal is passed through rather than smoothed over: a retry that
-        silently did nothing mid-turn would look like the model ignoring it.
-        """
-        try:
-            turns = max(1, int(params.get("turns") or 1))
-        except (TypeError, ValueError):
-            turns = 1
-        result = await self._session(params).control_query("rewind", {"turns": turns})
+        """List checkpoints or restore the checkpoint explicitly selected by the client."""
+        message_id = params.get("message_id")
+        if message_id is None:
+            result = await self._session(params).control_query("rewind_points", {})
+        else:
+            result = await self._session(params).control_query("rewind", {
+                "message_id": message_id,
+                "mode": params.get("mode", "conversation"),
+            })
         if not isinstance(result, dict):
             return {"ok": False, "error": "no response from the session"}
-        return {
-            "count": result.get("count", 0),
-            "error": result.get("error", ""),
-            "ok": result.get("ok") is not False,
-            "removed": result.get("removed", 0),
-        }
+        return result
 
     async def session_clear(self, params: dict[str, Any]) -> dict[str, Any]:
         result = await self._session(params).control_query("clear", {})

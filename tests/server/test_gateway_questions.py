@@ -487,20 +487,21 @@ def _rewind(reply: Any, params: dict[str, Any] | None = None) -> dict[str, Any]:
     return {**result, "_asked": session.asked}
 
 
-def test_rewind_defaults_to_one_turn() -> None:
-    result = _rewind({"ok": True, "removed": 4, "count": 2})
+def test_rewind_lists_checkpoints_without_a_selection() -> None:
+    result = _rewind({"ok": True, "points": [{"message_id": "u1"}]})
+    assert result["_asked"] == ("rewind_points", {})
+    assert result["points"] == [{"message_id": "u1"}]
 
-    assert result["_asked"] == ("rewind", {"turns": 1})
+
+def test_rewind_restores_the_selected_message_and_returns_transcript() -> None:
+    result = _rewind(
+        {"ok": True, "messages": [], "prompt": "first", "removed": 4},
+        {"message_id": "u1", "mode": "both"},
+    )
+    assert result["_asked"] == ("rewind", {"message_id": "u1", "mode": "both"})
+    assert result["messages"] == []
+    assert result["prompt"] == "first"
     assert result["removed"] == 4
-    assert result["ok"] is True
-
-
-@pytest.mark.parametrize(
-    "given,expected",
-    [({"turns": 3}, 3), ({"turns": 0}, 1), ({"turns": -2}, 1), ({"turns": "x"}, 1), ({}, 1)],
-)
-def test_rewind_clamps_the_turn_count(given: dict[str, Any], expected: int) -> None:
-    assert _rewind({"ok": True}, given)["_asked"][1] == {"turns": expected}
 
 
 def test_rewind_passes_the_refusal_through() -> None:

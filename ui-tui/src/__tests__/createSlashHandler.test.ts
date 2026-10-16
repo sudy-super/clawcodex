@@ -29,6 +29,23 @@ describe('createSlashHandler', () => {
     envState.dashboardTuiMode = false
   })
 
+  it('opens /rewind locally and rejects turn-count arguments', () => {
+    const ctx = buildCtx()
+    const slash = createSlashHandler(ctx)
+    expect(slash('/rewind 1')).toBe(true)
+    expect(getOverlayState().rewindPicker).toBe(false)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /rewind')
+    expect(slash('/rewind')).toBe(true)
+    expect(getOverlayState().rewindPicker).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('blocks rewind while a turn is running', () => {
+    const ctx = buildCtx({ session: { ...buildSession(), guardBusySessionSwitch: vi.fn(() => true) } })
+    createSlashHandler(ctx)('/rewind')
+    expect(getOverlayState().rewindPicker).toBe(false)
+  })
+
   it('opens the unified sessions overlay for /resume', () => {
     const ctx = buildCtx()
 
@@ -390,6 +407,7 @@ describe('createSlashHandler', () => {
           })
         : Promise.resolve({})
     )
+
     const ctx = buildCtx({ gateway: { ...buildGateway(), gw: { getLogTail: vi.fn(() => ''), kill: vi.fn(), request } } })
 
     expect(createSlashHandler(ctx)('/deep-research what is love')).toBe(true)
