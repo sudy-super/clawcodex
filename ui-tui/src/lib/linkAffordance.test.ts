@@ -28,4 +28,3 @@ describe('supportsHyperlinks terminal detection', () => {
     expect(supportsHyperlinks({ env: { TERM_PROGRAM: 'Apple_Terminal' }, stdoutSupported: false })).toBe(false)
   })
 })
-
