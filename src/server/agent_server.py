@@ -196,6 +196,7 @@ class _AgentSession:
     tool_registry: Any = None
     tool_context: Any = None
     _rewind_history: RewindHistory = field(default_factory=RewindHistory)
+    # Visible provider errors and interrupted output belong to the UI, not the model history.
     _display_messages: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     # ch03 round-4 GAP A — per-session reactive AppState store (the book's
     # §3.2 tier). Attached only on single-session transports; None on
@@ -5887,11 +5888,6 @@ class _AgentSession:
         )
         _subtype = EARLY_STOP_SUBTYPES.get(_stop or "", "success")
         _is_error = _subtype != "success"
-        if _is_error and not btw:
-            display_rows = self._display_messages.setdefault(prompt_id, [])
-            if result.response_text and result.response_text != self._message_text(self.session.conversation.messages[-1]):
-                display_rows.append({"role": "assistant", "text": result.response_text})
-            display_rows.append({"role": "system", "text": f"error: run stopped early ({_subtype})"})
         self._emit(_result_message(
             self.session_id,
             permission_mode=_current_mode(self.tool_context, self.config.permission_mode),
@@ -7179,7 +7175,8 @@ def _transcript_rows(msgs: list, display_messages: dict[str, list[dict[str, str]
     messages, injected ``<system-reminder>`` prompts (teammate mail, task
     notices — the web client hides the same rows), tool results, and reasoning
     items. A tool row keeps only the input fields its one-line summary reads,
-    so a Write doesn't ship the whole file it wrote.
+    so a Write doesn't ship the whole file it wrote. Display-only errors and
+    unfinished streamed output follow their prompt's persisted model messages.
     """
 
     def field(block: object, key: str) -> object:
