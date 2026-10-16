@@ -45,6 +45,12 @@ FAKE_SERVER = textwrap.dedent(
         msg = json.loads(line)
         if msg.get("type") == "user":
             count += 1
+            if "trigger provider error" in json.dumps(msg):
+                emit({"type": "result", "subtype": "error", "session_id": "s1",
+                      "num_turns": 0, "result": "provider returned 400: workspace-id required",
+                      "error": "provider returned 400: workspace-id required", "is_error": True,
+                      "duration_ms": 5, "usage": None, "cost": {}, "session_turns": count - 1})
+                continue
             text = "obsolete answer" if count == 2 else "retained answer"
             emit({"type": "assistant", "session_id": "s1", "uuid": f"a{count}",
                   "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}})
@@ -61,8 +67,9 @@ FAKE_SERVER = textwrap.dedent(
                      "files": [], "added": 0, "removed": 0, "can_restore_code": False},
                     {"message_id": "u2", "text": "restore this request", "timestamp": None,
                      "files": ["hello.ts"], "added": 3, "removed": 1, "can_restore_code": True}]}
+                result["points"] = result["points"][:count]
             elif subtype == "rewind":
-                if req.get("message_id") != "u2" or req.get("mode") != "conversation":
+                if req.get("message_id") not in ("u1", "u2") or req.get("mode") != "conversation":
                     result = {"ok": False, "error": "Unexpected rewind selection"}
                 else:
                     result = {"ok": True, "messages": [
@@ -70,6 +77,8 @@ FAKE_SERVER = textwrap.dedent(
                         {"role": "assistant", "text": "retained answer"}],
                         "prompt": "restore this request", "session_turns": 1,
                         "removed": 1, "restored_files": []}
+                    if req.get("message_id") == "u1":
+                        result.update(messages=[], prompt="keep this request", session_turns=0)
             emit({"type": "control_response", "response": {
                 "subtype": subtype, "request_id": msg.get("request_id"), "response": result}})
     """
@@ -81,12 +90,14 @@ class _TuiSession:
 
     COLS, ROWS = 140, 40
 
-    def __init__(self, tmp_path: Path):
+    def __init__(self, tmp_path: Path, rows: int = 40):
+        self.ROWS = rows
         server_path = tmp_path / "fake_agent_server.py"
         server_path.write_text(FAKE_SERVER, encoding="utf-8")
         env = {
             **os.environ,
             "TERM": "xterm-256color",
+            "CLAWCODEX_TUI_INLINE": "1",
             "CLAWCODEX_WORKSPACE": str(tmp_path),
             "CLAWCODEX_CONFIG_DIR": str(tmp_path / "cfg"),
             "CLAWCODEX_AGENT_SERVER_CMD": json.dumps(
@@ -103,6 +114,8 @@ class _TuiSession:
             slave, termios.TIOCSWINSZ,
             struct.pack("HHHH", self.ROWS, self.COLS, 0, 0),
         )
+        os.write(slave, b"HOST OUTPUT BEFORE CLAWCODEX\r\n")
+        self.raw = bytearray()
         self.proc = subprocess.Popen(
             ["node", str(ENTRY)],
             stdin=slave, stdout=slave, stderr=slave,
@@ -124,6 +137,7 @@ class _TuiSession:
                 return
             if not data:
                 return
+            self.raw.extend(data)
             self.stream.feed(data)
 
     def wait_for(self, needle: str, timeout: float) -> bool:
@@ -142,6 +156,17 @@ class _TuiSession:
             if needle in row:
                 return row
         return None
+
+    def row_index(self, needle: str) -> int:
+        matches = [index for index, row in enumerate(self.screen.display) if needle in row]
+        return max(matches) if matches else -1
+
+    def submit(self, text: str, expected: str) -> None:
+        self.send(text)
+        assert self.wait_for(text, 5), self.dump()
+        self.send("\r")
+        assert self.wait_for(expected, 20), self.dump()
+        self.pump(0.3)
 
     def dump(self) -> str:
         return "\n".join(
@@ -172,6 +197,8 @@ def test_rewind_replaces_visible_history_and_restores_composer(tui):
     tui.send("\r")
     assert tui.wait_for("retained answer", 20), tui.dump()
     tui.pump(0.3)
+    assert "a coding agent in your terminal" in tui.dump(), tui.dump()
+    assert tui.row_index("❯") >= tui.ROWS - 8, tui.dump()
     tui.send("restore this request")
     assert tui.wait_for("restore this request", 5), tui.dump()
     tui.send("\r")
@@ -180,7 +207,9 @@ def test_rewind_replaces_visible_history_and_restores_composer(tui):
     tui.send("/rewind")
     assert tui.wait_for("/rewind", 5), tui.dump()
     tui.send("\r")
-    assert tui.wait_for("Restore to before…", 10), tui.dump()
+    assert tui.wait_for("Restore the code and/or conversation to the point before…", 10), tui.dump()
+    tui.send("\x1b[A")
+    tui.pump(0.2)
     tui.send("\r")
     assert tui.wait_for("Restore code and conversation", 5), tui.dump()
     tui.send("\x1b[B")
@@ -191,6 +220,8 @@ def test_rewind_replaces_visible_history_and_restores_composer(tui):
     assert "retained answer" in tui.dump(), tui.dump()
     assert "Restore code and conversation" not in tui.dump(), tui.dump()
     assert "turns: 1" in tui.dump(), tui.dump()
+    assert "a coding agent in your terminal" in tui.dump(), tui.dump()
+    assert tui.row_index("❯") >= tui.ROWS - 8, tui.dump()
     tui.send(" edited")
     assert tui.wait_for("restore this request edited", 5), tui.dump()
 
@@ -204,12 +235,12 @@ def test_double_escape_opens_picker_and_escape_cancels(tui):
     tui.pump(0.3)
     tui.send("\x1b")
     tui.pump(0.1)
-    assert "Restore to before…" not in tui.dump(), tui.dump()
+    assert "Restore the code and/or conversation to the point before…" not in tui.dump(), tui.dump()
     tui.send("\x1b")
-    assert tui.wait_for("Restore to before…", 5), tui.dump()
+    assert tui.wait_for("Restore the code and/or conversation to the point before…", 5), tui.dump()
     tui.send("\x1b")
     tui.pump(0.3)
-    assert "Restore to before…" not in tui.dump(), tui.dump()
+    assert "Restore the code and/or conversation to the point before…" not in tui.dump(), tui.dump()
     assert "retained answer" in tui.dump(), tui.dump()
 
     tui.send("unsent draft")
@@ -218,5 +249,104 @@ def test_double_escape_opens_picker_and_escape_cancels(tui):
     tui.pump(0.1)
     tui.send("\x1b")
     tui.pump(0.3)
-    assert "Restore to before…" not in tui.dump(), tui.dump()
+    assert "Restore the code and/or conversation to the point before…" not in tui.dump(), tui.dump()
     assert "unsent draft" in tui.dump(), tui.dump()
+
+
+@pytest.mark.parametrize("rows", [24, 40])
+def test_rewind_panel_leaves_conversation_above_and_cancel_preserves_it(tmp_path, rows):
+    tui = _TuiSession(tmp_path, rows=rows)
+    try:
+        assert tui.wait_for("❯", 30), tui.dump()
+        tui.submit("keep this request", "retained answer")
+        tui.submit("restore this request", "obsolete answer")
+        assert tui.row_index("❯") >= rows - 8, tui.dump()
+        tui.submit("/rewind", "Restore the code and/or conversation to the point before…")
+        title = tui.row_index("Rewind")
+        answer = tui.row_index("obsolete answer")
+        assert 0 <= answer < title, tui.dump()
+        assert tui.row_index("Enter") < rows, tui.dump()
+        assert tui.row_index("Enter") >= rows - 3, tui.dump()
+        tui.send("\x1b")
+        tui.pump(0.4)
+        assert "Restore the code and/or conversation to the point before…" not in tui.dump(), tui.dump()
+        assert "retained answer" in tui.dump(), tui.dump()
+        assert "obsolete answer" in tui.dump(), tui.dump()
+        assert tui.row_index("❯") >= rows - 8, tui.dump()
+    finally:
+        tui.close()
+
+
+def test_first_response_keeps_logo_and_composer_at_screen_bottom(tui):
+    assert tui.wait_for("❯", 30), tui.dump()
+    assert "a coding agent in your terminal" in tui.dump(), tui.dump()
+    tui.submit("keep this request", "retained answer")
+    assert "a coding agent in your terminal" in tui.dump(), tui.dump()
+    assert "keep this request" in tui.dump(), tui.dump()
+    assert tui.row_index("❯") >= tui.ROWS - 8, tui.dump()
+
+
+def test_provider_error_stays_in_transcript(tui):
+    assert tui.wait_for("❯", 30), tui.dump()
+    tui.submit("trigger provider error", "provider returned 400: workspace-id required")
+    tui.send("next draft")
+    assert tui.wait_for("next draft", 5), tui.dump()
+    assert "provider returned 400: workspace-id required" in tui.dump(), tui.dump()
+    assert "trigger provider error" in tui.dump(), tui.dump()
+    assert tui.row_index("❯") >= tui.ROWS - 8, tui.dump()
+
+
+def test_fullscreen_uses_alternate_buffer_and_restores_it_on_exit(tui):
+    assert tui.wait_for("❯", 30), tui.dump()
+    assert "HOST OUTPUT BEFORE CLAWCODEX" not in tui.dump(), tui.dump()
+    entered = bytes(tui.raw).index(b"\x1b[?1049h")
+    assert b"\x1b[2J" not in tui.raw[:entered]
+    assert b"\x1b[3J" not in tui.raw[:entered]
+    tui.send("/exit")
+    assert tui.wait_for("/exit", 5), tui.dump()
+    tui.send("\r")
+    end = time.time() + 10
+    while tui.proc.poll() is None and time.time() < end:
+        tui.pump(0.2)
+    tui.pump(0.2)
+    assert tui.proc.poll() == 0, tui.dump()
+    assert b"\x1b[?1049l" in tui.raw[entered:]
+
+
+def test_fullscreen_resize_keeps_history_and_composer_inside_viewport(tui):
+    import fcntl
+    import signal
+    import struct
+    import termios
+
+    assert tui.wait_for("❯", 30), tui.dump()
+    tui.submit("keep this request", "retained answer")
+    for cols, rows in [(100, 24), (140, 40)]:
+        tui.COLS, tui.ROWS = cols, rows
+        tui.screen.resize(lines=rows, columns=cols)
+        fcntl.ioctl(tui.master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        os.kill(tui.proc.pid, signal.SIGWINCH)
+        tui.pump(0.8)
+        assert "retained answer" in tui.dump(), tui.dump()
+        assert "keep this request" in tui.dump(), tui.dump()
+        assert tui.row_index("❯") >= rows - 8, tui.dump()
+        assert tui.row_index("tokens:") == rows - 1, tui.dump()
+    assert "a coding agent in your terminal" in tui.dump(), tui.dump()
+
+
+
+def test_rewind_to_first_prompt_keeps_logo_on_empty_history(tui):
+    assert tui.wait_for("❯", 30), tui.dump()
+    tui.submit("keep this request", "retained answer")
+    tui.submit("/rewind", "Restore the code and/or conversation to the point before…")
+    tui.send("\x1b[A")
+    tui.pump(0.2)
+    tui.send("\r")
+    assert tui.wait_for("Restore to before this message?", 5), tui.dump()
+    tui.send("\r")
+    tui.pump(0.8)
+    assert "retained answer" not in tui.dump(), tui.dump()
+    assert "a coding agent in your terminal" in tui.dump(), tui.dump()
+    assert "turns: 0" in tui.dump(), tui.dump()
+    assert "keep this request" in tui.row_with("❯"), tui.dump()
+    assert tui.row_index("❯") >= tui.ROWS - 8, tui.dump()

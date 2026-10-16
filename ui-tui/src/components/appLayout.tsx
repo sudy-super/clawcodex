@@ -1,13 +1,13 @@
 import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@clawcodex/ink'
 import { useStore } from '@nanostores/react'
-import { Fragment, memo, useMemo, useRef } from 'react'
+import { memo, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
-import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE, TRANSCRIPT_COLOR } from '../config/env.js'
+import { SHOW_FPS, TERMUX_TUI_MODE, TRANSCRIPT_COLOR } from '../config/env.js'
 import { composerPlaceholder } from '../content/placeholders.js'
 import { prevRenderedMsg, showsInterTurnSeparator } from '../domain/blockLayout.js'
 import {
@@ -311,7 +311,6 @@ const ComposerPane = memo(function ComposerPane({
           onNewPromptSession={actions.newPromptSession}
           onPermissionsSelect={actions.onPermissionsSelect}
           onResumeSelect={actions.resumeById}
-          onRewindRestored={actions.onRewindRestored}
           pagerPageSize={composer.pagerPageSize}
         />
 
@@ -488,16 +487,10 @@ export const AppLayout = memo(function AppLayout({
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  // Inline mode skips AlternateScreen so the host terminal's native
-  // scrollback captures rows scrolled off the top; composer + progress
-  // stay anchored via normal flex-column flow.
-  const Shell = INLINE_MODE ? Fragment : AlternateScreen
-  const shellProps = INLINE_MODE ? {} : { mouseTracking }
-
   return (
-    <Shell {...shellProps}>
-      <Box flexDirection="column" flexGrow={1}>
-        <Box flexDirection="row" flexGrow={1}>
+    <AlternateScreen mouseTracking={mouseTracking}>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
+        <Box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0}>
           {overlay.agents ? (
             <PerfPane id="agents">
               <AgentsOverlayPane />
@@ -511,7 +504,7 @@ export const AppLayout = memo(function AppLayout({
 
         {!overlay.agents && (
           <>
-            <PetPane />
+            {!overlay.rewindPicker && <PetPane />}
 
             <PerfPane id="prompt">
               <PromptZone
@@ -520,14 +513,17 @@ export const AppLayout = memo(function AppLayout({
                 onClarifyAnswer={actions.answerClarify}
                 onPlanApprovalChoice={actions.answerPlanApproval}
                 onQuestionsAnswer={actions.answerQuestions}
+                onRewindRestored={actions.onRewindRestored}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
               />
             </PerfPane>
 
-            <PerfPane id="composer">
-              <ComposerPane actions={actions} composer={composer} status={status} />
-            </PerfPane>
+            {!overlay.rewindPicker && (
+              <PerfPane id="composer">
+                <ComposerPane actions={actions} composer={composer} status={status} />
+              </PerfPane>
+            )}
 
             {SHOW_FPS && (
               <Box flexShrink={0} justifyContent="flex-end" paddingRight={1}>
@@ -537,7 +533,7 @@ export const AppLayout = memo(function AppLayout({
           </>
         )}
       </Box>
-    </Shell>
+    </AlternateScreen>
   )
 })
 

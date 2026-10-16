@@ -11,7 +11,6 @@ import type {
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
 import { setLastCostSnapshot } from '../lib/costSummary.js'
-import { linkTipFor } from '../lib/linkAffordance.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
@@ -1049,17 +1048,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         if (!wasInterrupted) {
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
           msgs.forEach(appendMessage)
-
-          // One-time "how to open links here" tip, directly under the first
-          // assistant message that contains a URL — only in terminals with no
-          // OSC 8 support (Apple Terminal), where Cmd+click can't work and
-          // the native gesture is undiscoverable. Plain assistant text only:
-          // tool-trail rows can carry URLs that aren't rendered as links.
-          const tip = linkTipFor(msgs.filter(m => m.role === 'assistant' && !m.kind).map(m => m.text))
-
-          if (tip) {
-            sys(tip)
-          }
 
           // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
           flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')

@@ -5,7 +5,7 @@ import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@clawcodex/ink'
 
-import { DASHBOARD_TUI_MODE, INLINE_MODE, TERMUX_TUI_MODE } from './config/env.js'
+import { DASHBOARD_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { registerCostSummaryOnExit } from './lib/costSummary.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
@@ -21,20 +21,7 @@ if (!process.stdin.isTTY) {
   process.exit(0)
 }
 
-// Whether we run in the alternate screen — must match appLayout's
-// `INLINE_MODE ? Fragment : AlternateScreen`, which keys off INLINE_MODE alone
-// (so Termux + CLAWCODEX_TUI_INLINE=0 is fullscreen too). Only fullscreen should
-// leave the alt screen on cleanup: in inline mode emitting rmcup (?1049l) homes
-// the cursor on Apple Terminal, overlapping the banner onto scrollback at startup
-// and dropping the prompt onto the frame at exit — see terminalModes.ts.
-const FULLSCREEN = !INLINE_MODE
-
-// Reset leftover input modes (mouse/focus/paste) a crashed-or-killed prior
-// program may have armed. Never leave the alt screen here: at startup we haven't
-// entered it, and rmcup would home the cursor inline. (Tradeoff: an inline TUI
-// launched into a stale alt screen left by a hard-crashed fullscreen program
-// won't be pulled back to the primary buffer — rare, vs. the common-case overlap
-// this avoids.)
+// Clear stale input modes before entering AlternateScreen.
 resetTerminalModes()
 
 // Final backstop for terminal cleanup. setupGracefulExit() resets modes on
@@ -50,7 +37,7 @@ resetTerminalModes()
 // before the process is gone. Idempotent and cheap, so layering it under the
 // graceful-exit cleanups is safe.
 process.on('exit', () => {
-  resetTerminalModes(process.stdout, FULLSCREEN)
+  resetTerminalModes(process.stdout, true)
 })
 
 // --worktree keep/remove result under the final frame. Registered AFTER the
@@ -63,17 +50,6 @@ registerWorktreeNoteOnExit()
 // ('exit' listeners run in order) so the block prints onto a sane terminal.
 registerCostSummaryOnExit()
 
-// Only wipe the screen for a clean slate in fullscreen (alternate-screen) mode.
-// Inline mode (the default) and Termux keep prior terminal output intact so the
-// transcript flows into native scrollback — Claude Code-style. The erase
-// (2J + home + 3J scrollback) is exactly what made launch read as a vim-style
-// takeover, so it's gated to the fullscreen path only.
-if (TERMUX_TUI_MODE || INLINE_MODE) {
-  process.stdout.write('\n')
-} else {
-  process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
-}
-
 const gw = new GatewayClient()
 
 gw.start()
@@ -84,7 +60,7 @@ const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) =>
 setupGracefulExit({
   cleanups: [
     () => {
-      resetTerminalModes(process.stdout, FULLSCREEN)
+      resetTerminalModes(process.stdout, true)
 
       return gw.kill('graceful-exit-cleanup')
     }
@@ -104,7 +80,7 @@ setupGracefulExit({
     // (gw.kill forwards SIGTERM regardless of which signal hit us) — this is
     // what tells SIGHUP (terminal/SSH dropped) apart from a real SIGTERM.
     recordParentLifecycle(`graceful-exit received signal=${signal} → killing gateway`)
-    resetTerminalModes(process.stdout, FULLSCREEN)
+    resetTerminalModes(process.stdout, true)
     process.stderr.write(`clawcodex-tui lifecycle: received ${signal}\n`)
   },
   // The dashboard chat tab has no in-page restart path after the PTY child
@@ -122,7 +98,7 @@ const stopMemoryMonitor = startMemoryMonitor({
     recordParentLifecycle(
       `memory-critical process.exit(137) heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)} dump=${dump?.heapPath ?? 'failed'}`
     )
-    resetTerminalModes(process.stdout, FULLSCREEN)
+    resetTerminalModes(process.stdout, true)
     process.stderr.write(
       `clawcodex-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`
     )

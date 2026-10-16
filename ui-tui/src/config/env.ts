@@ -51,24 +51,12 @@ export const MOUSE_TRACKING: MouseTrackingMode = resolvedBootMouseEnabled ? 'all
 
 export const NO_CONFIRM_DESTRUCTIVE = truthy(process.env.CLAWCODEX_TUI_NO_CONFIRM)
 
-// Set by the dashboard PTY launcher. This is intentionally narrower than
-// INLINE_MODE: users can opt into inline terminal rendering locally, but the
-// browser-embedded TUI has no healthy restart path after an idle exit.
+// The browser-embedded TUI keeps running until the dashboard closes it.
 export const DASHBOARD_TUI_MODE = truthy(process.env.CLAWCODEX_TUI_DASHBOARD)
 
 // CLAWCODEX_DEV_CREDITS — dev-only live-spend readout (Δ status segment + "(dev credits)"
 // banner). Throwaway dev scaffolding; the whole readout gates on this one flag.
 export const DEV_CREDITS_MODE = truthy(process.env.CLAWCODEX_DEV_CREDITS)
-
-const inlineOverride = parseToggle(process.env.CLAWCODEX_TUI_INLINE)
-
-// Skip AlternateScreen — render into the primary buffer so the host terminal's
-// native scrollback captures whatever scrolls off the top.
-//
-// This is the DEFAULT, matching the original Claude Code's inline rendering (the
-// transcript stays in your terminal history rather than vanishing on exit).
-// Opt into the fullscreen/alternate-screen experience with CLAWCODEX_TUI_INLINE=0.
-export const INLINE_MODE = inlineOverride ?? true
 
 // Live FPS counter overlay, fed by ink's onFrame (real render rate, not a
 // synthetic timer).

@@ -15,7 +15,7 @@ import { STARTUP_RESUME_ID, TRANSCRIPT_COLOR } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { hasLeadGap, prevRenderedMsg, showsInterTurnSeparator } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
-import { attachedImageNotice, toTranscriptMessages } from '../domain/messages.js'
+import { attachedImageNotice, introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { infoAfterModelSwitch, modelPickerCommands, modelSwitchNotice } from '../domain/modelSwitch.js'
 import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
@@ -1151,7 +1151,12 @@ export function useMainApp(gw: GatewayClient) {
       if (mode !== 'code') {
         turnController.reset()
         heightCachesRef.current.clear()
-        setHistoryItems(toTranscriptMessages(result.messages))
+        setHistoryItems(previous => {
+          const info = getUiState().info
+          const intro = previous.find(message => message.kind === 'intro') ?? (info ? introMsg(info) : null)
+
+          return [...(intro ? [intro] : []), ...toTranscriptMessages(result.messages)]
+        })
         setLastUserMsg('')
         setStickyPrompt('')
         composerActions.setInput(result.prompt)

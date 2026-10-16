@@ -31,7 +31,7 @@ const points = [
   }
 ]
 
-function mount(fail = false) {
+function mount(fail = false, rows = 40, history = points) {
   const stdin = new PassThrough()
   const stdout = new PassThrough()
   const stderr = new PassThrough()
@@ -39,7 +39,7 @@ function mount(fail = false) {
   stdout.on('data', chunk => {
     output += chunk.toString()
   })
-  Object.assign(stdout, { columns: 100, rows: 40 })
+  Object.assign(stdout, { columns: 100, rows })
   Object.assign(stdin, { isTTY: true, ref() {}, unref() {}, setRawMode() {} })
   const onCancel = vi.fn()
   const onRestored = vi.fn()
@@ -47,7 +47,7 @@ function mount(fail = false) {
   const request = vi.fn((method: string) =>
     Promise.resolve(
       method === 'rewind.points'
-        ? { ok: true, points }
+        ? { ok: true, points: history }
         : fail
           ? { ok: false, error: 'File changed outside the agent' }
           : { ok: true, messages: [], prompt: 'Change the file', session_turns: 0 }
@@ -85,12 +85,60 @@ function mount(fail = false) {
 }
 
 describe('rewind picker', () => {
-  it('selects the latest message and confirms conversation-only restoration while keeping code', async () => {
+  it('starts at current and Enter dismisses without changing code or conversation', async () => {
     const m = mount()
 
     try {
       await delay()
-      expect(m.frame()).toContain('Change the file')
+      expect(m.frame()).toContain('❯ (current)')
+      expect(m.frame()).toContain('─')
+      expect(m.frame()).not.toMatch(/[╔╗╚╝║│]/)
+      await m.press('\r')
+      expect(m.onCancel).toHaveBeenCalledOnce()
+      expect(m.request).toHaveBeenCalledTimes(1)
+      expect(m.onRestored).not.toHaveBeenCalled()
+    } finally {
+      m.app.unmount()
+    }
+  })
+
+  it('keeps a bounded window including current on a 24-row terminal', async () => {
+    const history = Array.from({ length: 20 }, (_, i) => ({ ...points[0]!, message_id: `m${i}`, text: `Request ${i}` }))
+    const m = mount(false, 24, history)
+
+    try {
+      await delay()
+      expect(m.frame()).toContain('❯ (current)')
+      expect(m.frame()).toContain('↑ 19 more')
+      expect(m.frame()).toContain('Request 19')
+      expect(m.frame()).not.toContain('Request 18')
+      await m.press('\x1b[A')
+      await m.press('\x1b[A')
+      await m.press('\x1b[A')
+      expect(m.frame()).toContain('❯ Request 17')
+      expect(m.frame()).toContain('↓ 3 more')
+      expect(m.frame()).not.toContain('(current)')
+      await m.press('\x1b[B')
+      await m.press('\x1b[B')
+      await m.press('\x1b[B')
+      await m.press('\x1b[B')
+      expect(m.frame()).toContain('❯ (current)')
+      await m.press('\r')
+      expect(m.onCancel).toHaveBeenCalledOnce()
+      expect(m.request).toHaveBeenCalledTimes(1)
+    } finally {
+      m.app.unmount()
+    }
+  })
+
+  it('moves from current to the latest message and confirms conversation-only restoration while keeping code', async () => {
+    const m = mount()
+
+    try {
+      await delay()
+      expect(m.frame()).toContain('❯ (current)')
+      await m.press('\x1b[A')
+      expect(m.frame()).toContain('❯ Change the file')
       await m.press('\r')
       expect(m.frame()).toContain('Restore code and conversation')
       expect(m.request).toHaveBeenCalledTimes(1)
@@ -112,6 +160,7 @@ describe('rewind picker', () => {
     try {
       await delay()
       await m.press('\x1b[A')
+      await m.press('\x1b[A')
       await m.press('\r')
       expect(m.frame()).toContain('First request')
       expect(m.frame()).not.toContain('Restore code and conversation')
@@ -130,6 +179,7 @@ describe('rewind picker', () => {
 
     try {
       await delay()
+      await m.press('\x1b[A')
       await m.press('\r')
       await m.press('\x1b')
       expect(m.request).toHaveBeenCalledTimes(1)
@@ -146,6 +196,7 @@ describe('rewind picker', () => {
 
     try {
       await delay()
+      await m.press('\x1b[A')
       await m.press('\r')
       await m.press('3')
       await m.press('\r')

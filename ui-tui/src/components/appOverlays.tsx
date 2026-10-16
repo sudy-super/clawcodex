@@ -32,6 +32,7 @@ export function PromptZone({
   onClarifyAnswer,
   onPlanApprovalChoice,
   onQuestionsAnswer,
+  onRewindRestored,
   onSecretSubmit,
   onSudoSubmit
 }: Pick<
@@ -41,9 +42,12 @@ export function PromptZone({
   | 'onClarifyAnswer'
   | 'onPlanApprovalChoice'
   | 'onQuestionsAnswer'
+  | 'onRewindRestored'
   | 'onSecretSubmit'
   | 'onSudoSubmit'
 >) {
+  const { gw } = useGateway()
+  const sid = useStore($uiSessionId)
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
 
@@ -54,6 +58,18 @@ export function PromptZone({
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
         <WorktreeExitPrompt req={overlay.worktreeExit} t={theme} />
       </Box>
+    )
+  }
+
+  if (overlay.rewindPicker) {
+    return (
+      <RewindPicker
+        gw={gw}
+        onCancel={() => patchOverlayState({ rewindPicker: false })}
+        onRestored={onRewindRestored}
+        sessionId={sid}
+        t={theme}
+      />
     )
   }
 
@@ -171,7 +187,6 @@ export function FloatingOverlays({
   onActiveSessionClose,
   onLogoSelect,
   onMemorySelect,
-  onRewindRestored,
   onModelSelect,
   onNewLiveSession,
   onNewPromptSession,
@@ -187,7 +202,6 @@ export function FloatingOverlays({
   | 'onActiveSessionClose'
   | 'onLogoSelect'
   | 'onMemorySelect'
-  | 'onRewindRestored'
   | 'onModelSelect'
   | 'onNewLiveSession'
   | 'onNewPromptSession'
@@ -205,7 +219,6 @@ export function FloatingOverlays({
   const hasAny =
     overlay.logoPicker ||
     overlay.memoryPicker ||
-    overlay.rewindPicker ||
     overlay.modelPicker ||
     overlay.permissionsPicker ||
     overlay.pager ||
@@ -273,18 +286,6 @@ export function FloatingOverlays({
             current={permissionMode}
             onClose={() => patchOverlayState({ permissionsPicker: false })}
             onSelect={onPermissionsSelect}
-            t={theme}
-          />
-        </FloatBox>
-      )}
-
-      {overlay.rewindPicker && (
-        <FloatBox color={theme.color.accent}>
-          <RewindPicker
-            gw={gw}
-            onCancel={() => patchOverlayState({ rewindPicker: false })}
-            onRestored={onRewindRestored}
-            sessionId={sid}
             t={theme}
           />
         </FloatBox>

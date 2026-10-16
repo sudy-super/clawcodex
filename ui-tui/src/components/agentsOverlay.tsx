@@ -11,7 +11,6 @@ import {
 import { patchOverlayState } from '../app/overlayStore.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
 import { $sessionAgents, useTurnSelector } from '../app/turnStore.js'
-import { INLINE_MODE } from '../config/env.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
@@ -161,15 +160,12 @@ function OverlayScrollbar({
   const s = scrollRef.current
   const vp = Math.max(0, s?.getViewportHeight() ?? 0)
 
-  // Inline mode: same stale-tall-sibling trap as TranscriptScrollbar — see the
-  // long comment there. This bar is `vp` rows tall and is a row sibling of the
-  // overlay's ScrollBox, so in an unconstrained-height tree it stretches that
-  // ScrollBox and pads the difference with blank rows.
-  if (!vp || INLINE_MODE) {
+  const total = Math.max(vp, s?.getScrollHeight() ?? vp)
+
+  if (!vp || total <= vp) {
     return <Box width={1} />
   }
 
-  const total = Math.max(vp, s?.getScrollHeight() ?? vp)
   const scrollable = total > vp
   const thumb = scrollable ? Math.max(1, Math.round((vp * vp) / total)) : vp
   const travel = Math.max(1, vp - thumb)

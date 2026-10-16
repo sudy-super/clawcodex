@@ -5,44 +5,11 @@ import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { TranscriptScrollbar } from '../components/appChrome.js'
-import { INLINE_MODE } from '../config/env.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
-/**
- * Regression: resizing the terminal blanked the whole transcript (reported in
- * the VS Code integrated terminal).
- *
- * Inline mode lays the tree out with `calculateLayout(columns)` and NO height
- * constraint, so the transcript ScrollBox sizes to its content. This scrollbar
- * is a ROW SIBLING of that ScrollBox and renders exactly `viewportHeight` rows
- * tall — and that value is LAST frame's `scrollViewportHeight`, written by the
- * renderer at paint time. A flex row stretches its children to the tallest one,
- * so a stale-tall bar stretches the ScrollBox; its inner wrapper (flexGrow:1)
- * fills the extra with blank rows; and the stretched height becomes the next
- * frame's `scrollViewportHeight`, re-rendering the bar at that same height. A
- * stable fixed point, not a transient.
- *
- * Widening the terminal re-wraps every row shorter, so the gap opens exactly
- * when the content shrinks: measured 161 → 102 rows at 60 → 110 columns on a
- * real PTY, with the ScrollBox pinned at 161. Those ~59 blank rows pushed the
- * transcript above the terminal viewport, where the resize repaint's
- * ERASE_SCROLLBACK (log-update `fullReset` → `clearTerminal`) wiped it from
- * scrollback — so the transcript was gone, not merely scrolled off.
- *
- * ROWS, not glyphs, is the thing to assert. Inline mode always satisfies
- * `total <= vp`, so the bar takes its !scrollable branch and paints a column of
- * SPACES: invisible, but 40 rows tall, and height is the whole defect. Pinning
- * "draws no bar characters" would pass against the bug.
- *
- * The end-to-end proof is a PTY + pyte run against the real binary: blank rows
- * after a 60→110 resize went 20-22/30 → 7-8/30. Only WIDENING exhibits it —
- * narrowing grows the content past the stale-short bar, so there is no gap to
- * open — and that run needs a live agent-server, so it can't happen here.
- *
- * What this file pins is the guard, not the loop: reproducing the loop needs a
- * real TTY resize, which renderSync over a PassThrough does not deliver.
- */
+// A non-scrollable transcript keeps only the scrollbar's column gutter.
+// A scrollable transcript renders the track inside the fullscreen viewport.
 
 const SENTINEL = 'BAR_PROBE'
 
@@ -143,25 +110,17 @@ async function paintedRows(bar: null | { scrollHeight: number; viewportHeight: n
   return (painted.match(/\n/g) ?? []).length
 }
 
-describe('TranscriptScrollbar in inline mode', () => {
-  it('is the default mode, so the guard below is the one that ships', () => {
-    expect(INLINE_MODE).toBe(true)
-  })
+describe('TranscriptScrollbar', () => {
 
-  it('adds no rows when the content fits — the real inline case', async () => {
-    // total === vp is what inline mode always produces: the ScrollBox sizes to
-    // its content, so it never scrolls. Pre-fix this painted 40 rows of spaces
-    // and stretched the transcript by the same 40 rows.
+  it('adds no rows when the content fits', async () => {
     const baseline = await paintedRows(null)
 
     expect(await paintedRows({ scrollHeight: 40, viewportHeight: 40 })).toBe(baseline)
   })
 
-  it('adds no rows even if it somehow believes it is scrollable', async () => {
-    // Defence in depth: a stale snapshot could report total > vp mid-resize,
-    // which pre-fix drew 40 rows of ┃/│ glyphs.
+  it('renders a track when the transcript is scrollable', async () => {
     const baseline = await paintedRows(null)
 
-    expect(await paintedRows({ scrollHeight: 120, viewportHeight: 40 })).toBe(baseline)
+    expect(await paintedRows({ scrollHeight: 120, viewportHeight: 40 })).toBeGreaterThan(baseline)
   })
 })
